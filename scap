@@ -1,0 +1,89 @@
+#!/bin/zsh
+set -euo pipefail
+
+repo_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
+cd "$repo_dir"
+
+pid_file="${repo_dir}/.scap.pid"
+log_file="${repo_dir}/scap.log"
+bin_path="${repo_dir}/.build/release/ocr-screenshot"
+build_dir="${repo_dir}/.build"
+module_cache="${build_dir}/clang-module-cache"
+tmp_dir="${build_dir}/tmp"
+
+is_running() {
+  if [[ -f "$pid_file" ]]; then
+    local pid
+    pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+start_app() {
+  if is_running; then
+    echo "ocr-screenshot already running (pid $(cat "$pid_file"))."
+    exit 0
+  fi
+
+  rm -f "$pid_file"
+  mkdir -p "$build_dir" "$module_cache" "$tmp_dir"
+  if [[ ! -x "$bin_path" ]]; then
+    {
+      echo "[scap] Building release binary..."
+      env \
+        CLANG_MODULE_CACHE_PATH="$module_cache" \
+        TMPDIR="$tmp_dir" \
+        SWIFTPM_DISABLE_SANDBOX=1 \
+        swift build -c release
+    } >"$log_file" 2>&1 || {
+      echo "Build failed. See $log_file"
+      tail -n 50 "$log_file" || true
+      exit 1
+    }
+  fi
+
+  nohup "$bin_path" >"$log_file" 2>&1 &
+
+  echo $! >"$pid_file"
+  disown
+  sleep 1
+  if is_running; then
+    echo "Started ocr-screenshot in background (pid $(cat "$pid_file")). Log: $log_file"
+  else
+    echo "ocr-screenshot exited immediately. See $log_file"
+    tail -n 50 "$log_file" || true
+    exit 1
+  fi
+}
+
+stop_app() {
+  if ! is_running; then
+    echo "ocr-screenshot not running."
+    rm -f "$pid_file"
+    exit 0
+  fi
+
+  local pid
+  pid="$(cat "$pid_file")"
+  kill "$pid" 2>/dev/null || true
+  rm -f "$pid_file"
+  echo "Stopped ocr-screenshot (pid $pid)."
+}
+
+status_app() {
+  if is_running; then
+    echo "ocr-screenshot running (pid $(cat "$pid_file"))."
+  else
+    echo "ocr-screenshot not running."
+  fi
+}
+
+case "${1:-start}" in
+  start) start_app ;;
+  stop) stop_app ;;
+  status) status_app ;;
+  *) echo "Usage: $0 [start|stop|status]" ; exit 1 ;;
+esac
