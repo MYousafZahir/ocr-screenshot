@@ -4,9 +4,13 @@ import AppKit
 final class CaptureCoordinator {
     private let selectionController = SelectionOverlayController()
     private let ocrProcessor = OCRProcessor()
+    private let visionFallbackProcessor = OCRProcessor(backend: .vision, combineBackends: false)
+    private let postProcessor = DanubePostProcessor.shared
     private let formatter = LayoutFormatter()
     private let upscaleFactor = 2
     private let defaultPadding: CGFloat = 8
+    private var captureSequence: UInt64 = 0
+    private var latestCaptureID: UInt64 = 0
 
     func startCapture() {
         NSApp.activate(ignoringOtherApps: true)
@@ -26,6 +30,8 @@ final class CaptureCoordinator {
             completion?(.failure(OCRProcessorError.noResults))
             return
         }
+        let captureID = nextCaptureID()
+        clearClipboardForCapture()
         let paddedRect = applyPadding(to: rect)
         guard let image = ScreenCapture.capture(rect: paddedRect) else {
             AppLog.error("Screen capture failed.")
@@ -58,8 +64,22 @@ final class CaptureCoordinator {
                 case .success(let boxes):
                     AppLog.info("OCR succeeded with \(boxes.count) boxes.")
                     let text = formatter.format(boxes: boxes)
-                    ClipboardWriter.write(text: text)
-                    completion?(.success(text))
+                    self.maybeRunQualityFallback(
+                        baseText: text,
+                        image: upscaledImage,
+                        formatter: formatter
+                    ) { finalText in
+                        self.postProcessor.postProcess(text: finalText) { processedText in
+                            Task { @MainActor in
+                                if captureID == self.latestCaptureID {
+                                    ClipboardWriter.write(text: processedText)
+                                } else {
+                                    AppLog.info("Clipboard update skipped for stale capture \(captureID).")
+                                }
+                                completion?(.success(processedText))
+                            }
+                        }
+                    }
                 case .failure(let error):
                     AppLog.error("OCR failed: \(error)")
                     NSSound.beep()
@@ -98,6 +118,21 @@ final class CaptureCoordinator {
         return defaultPadding
     }
 
+    private func nextCaptureID() -> UInt64 {
+        captureSequence &+= 1
+        latestCaptureID = captureSequence
+        return captureSequence
+    }
+
+    private func clearClipboardForCapture() {
+        guard shouldClearClipboardOnCapture() else { return }
+        ClipboardWriter.clear()
+    }
+
+    private func shouldClearClipboardOnCapture() -> Bool {
+        ProcessInfo.processInfo.environment["OCR_CLEAR_CLIPBOARD_ON_CAPTURE"] != "0"
+    }
+
     private func applyPaddingBlur(to image: CGImage, focusRect: CGRect, flipY: Bool, enabled: Bool) -> CGImage {
         guard enabled else { return image }
         return PaddingBlur.apply(to: image, focusRect: focusRect, flipY: flipY)
@@ -130,6 +165,54 @@ final class CaptureCoordinator {
 
     private func multiPassEnabled() -> Bool {
         ProcessInfo.processInfo.environment["OCR_MULTI_PASS"] != "0"
+    }
+
+    private func maybeRunQualityFallback(
+        baseText: String,
+        image: CGImage,
+        formatter: LayoutFormatter,
+        completion: @escaping @Sendable (String) -> Void
+    ) {
+        guard qualityFallbackEnabled() else {
+            completion(baseText)
+            return
+        }
+
+        let score = TextQualityScorer.score(baseText)
+        let threshold = qualityThreshold()
+        if score >= threshold {
+            completion(baseText)
+            return
+        }
+
+        AppLog.info("OCR quality score \(String(format: "%.2f", score)) below \(threshold). Running Vision fallback.")
+        visionFallbackProcessor.recognizeText(in: image) { result in
+            Task { @MainActor in
+                switch result {
+                case .success(let boxes):
+                    let candidate = formatter.format(boxes: boxes)
+                    let chosen = TextQualityScorer.chooseBetter(primary: baseText, secondary: candidate)
+                    if chosen != baseText {
+                        AppLog.info("OCR quality fallback selected Vision output.")
+                    }
+                    completion(chosen)
+                case .failure:
+                    completion(baseText)
+                }
+            }
+        }
+    }
+
+    private func qualityFallbackEnabled() -> Bool {
+        ProcessInfo.processInfo.environment["OCR_QUALITY_FALLBACK"] != "0"
+    }
+
+    private func qualityThreshold() -> Double {
+        if let raw = ProcessInfo.processInfo.environment["OCR_QUALITY_THRESHOLD"],
+           let value = Double(raw) {
+            return value
+        }
+        return 0.62
     }
 
     private func performMultiPassOCR(

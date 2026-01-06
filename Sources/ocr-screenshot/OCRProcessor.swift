@@ -27,10 +27,11 @@ final class OCRProcessor: @unchecked Sendable {
     private let paddleRunner: PaddleOCRRunner?
     private let combineBackends: Bool
 
-    init(backend: OCRBackend = .current) {
+    init(backend: OCRBackend = .current, combineBackends: Bool? = nil) {
         self.backend = backend
         self.paddleRunner = PaddleOCRRunner()
-        self.combineBackends = ProcessInfo.processInfo.environment["OCR_COMBINE_BACKENDS"] != "0"
+        let defaultCombine = ProcessInfo.processInfo.environment["OCR_COMBINE_BACKENDS"] != "0"
+        self.combineBackends = combineBackends ?? defaultCombine
     }
 
     func recognizeText(in image: CGImage, completion: @escaping @Sendable (Result<[RecognizedTextBox], Error>) -> Void) {

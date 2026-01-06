@@ -8,14 +8,9 @@ enum RecognizedTextMerger {
         for candidate in secondary {
             if let index = bestOverlapIndex(for: candidate, in: merged) {
                 let primaryBox = merged[index]
-                let primaryScore = textScore(primaryBox.text)
-                let secondaryScore = textScore(candidate.text)
                 let rect = primaryBox.rect.union(candidate.rect)
-                if secondaryScore > primaryScore {
-                    merged[index] = RecognizedTextBox(text: candidate.text, rect: rect)
-                } else {
-                    merged[index] = RecognizedTextBox(text: primaryBox.text, rect: rect)
-                }
+                let chosenText = chooseText(primary: primaryBox.text, secondary: candidate.text)
+                merged[index] = RecognizedTextBox(text: chosenText, rect: rect)
             } else {
                 merged.append(candidate)
             }
@@ -50,7 +45,61 @@ enum RecognizedTextMerger {
         return intersectionArea / minArea
     }
 
-    private static func textScore(_ text: String) -> Int {
-        text.filter { !$0.isWhitespace }.count
+    private static func chooseText(primary: String, secondary: String) -> String {
+        let primaryNormalized = normalize(primary)
+        let secondaryNormalized = normalize(secondary)
+        guard !secondaryNormalized.isEmpty else { return primary }
+        guard !primaryNormalized.isEmpty else { return secondary }
+
+        if primaryNormalized.count < 3 && secondaryNormalized.count > primaryNormalized.count {
+            return secondary
+        }
+
+        if secondaryNormalized.contains(primaryNormalized) || primaryNormalized.contains(secondaryNormalized) {
+            return secondaryNormalized.count > primaryNormalized.count ? secondary : primary
+        }
+
+        let similarity = similarityRatio(primaryNormalized, secondaryNormalized)
+        if similarity >= 0.6 && secondaryNormalized.count > primaryNormalized.count {
+            return secondary
+        }
+
+        return primary
+    }
+
+    private static func normalize(_ text: String) -> String {
+        text
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+    }
+
+    private static func similarityRatio(_ a: String, _ b: String) -> Double {
+        let minLength = min(a.count, b.count)
+        guard minLength > 0 else { return 0 }
+        let prefix = commonPrefixLength(a, b)
+        let suffix = commonSuffixLength(a, b)
+        return Double(prefix + suffix) / Double(minLength)
+    }
+
+    private static func commonPrefixLength(_ a: String, _ b: String) -> Int {
+        let aChars = Array(a)
+        let bChars = Array(b)
+        let count = min(aChars.count, bChars.count)
+        var length = 0
+        for index in 0..<count where aChars[index] == bChars[index] {
+            length += 1
+        }
+        return length
+    }
+
+    private static func commonSuffixLength(_ a: String, _ b: String) -> Int {
+        let aChars = Array(a)
+        let bChars = Array(b)
+        let count = min(aChars.count, bChars.count)
+        var length = 0
+        for offset in 0..<count where aChars[aChars.count - 1 - offset] == bChars[bChars.count - 1 - offset] {
+            length += 1
+        }
+        return length
     }
 }

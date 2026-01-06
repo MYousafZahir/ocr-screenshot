@@ -10,4 +10,10 @@ enum ClipboardWriter {
             AppLog.error("Clipboard write failed.")
         }
     }
+
+    static func clear() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        AppLog.info("Clipboard cleared for new capture.")
+    }
 }

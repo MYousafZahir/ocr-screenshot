@@ -40,6 +40,7 @@ final class OCRScreenshotApp: NSObject, NSApplicationDelegate {
         }
         hotKeyManager.register()
         self.hotKeyManager = hotKeyManager
+        DanubePostProcessor.shared.prewarm()
         startSelfTestIfNeeded()
     }
 
