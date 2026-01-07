@@ -66,15 +66,6 @@ install_paddle() {
   "$paddle_python" -m pip install paddlepaddle paddleocr pillow opencv-python numpy
 
   log "Downloading PaddleOCR models..."
-  local det_dir="${paddle_models}/det"
-  local rec_dir="${paddle_models}/rec"
-  local cls_dir=""
-  mkdir -p "$det_dir" "$rec_dir"
-  if [[ "${PADDLEOCR_ENABLE_ORIENTATION:-0}" == "1" ]]; then
-    cls_dir="${paddle_models}/cls"
-    mkdir -p "$cls_dir"
-  fi
-
   DISABLE_MODEL_SOURCE_CHECK=True "$paddle_python" - <<PY
 import inspect
 import os
@@ -83,37 +74,10 @@ os.environ.setdefault("DISABLE_MODEL_SOURCE_CHECK", "True")
 
 from paddleocr import PaddleOCR
 
-det_dir = r"""$det_dir"""
-rec_dir = r"""$rec_dir"""
-cls_dir = r"""$cls_dir"""
-use_orientation = bool(cls_dir)
-
 sig = inspect.signature(PaddleOCR)
 params = sig.parameters
 
 kwargs = {"lang": "en"}
-
-if "text_detection_model_dir" in params:
-    kwargs["text_detection_model_dir"] = det_dir
-else:
-    kwargs["det_model_dir"] = det_dir
-
-if "text_recognition_model_dir" in params:
-    kwargs["text_recognition_model_dir"] = rec_dir
-else:
-    kwargs["rec_model_dir"] = rec_dir
-
-if use_orientation:
-    if "textline_orientation_model_dir" in params:
-        kwargs["textline_orientation_model_dir"] = cls_dir
-    elif "cls_model_dir" in params:
-        kwargs["cls_model_dir"] = cls_dir
-
-if use_orientation:
-    if "use_textline_orientation" in params:
-        kwargs["use_textline_orientation"] = True
-    elif "use_angle_cls" in params:
-        kwargs["use_angle_cls"] = True
 
 if "use_gpu" in params:
     kwargs["use_gpu"] = False
@@ -125,39 +89,10 @@ elif "device_type" in params:
 if "show_log" in params:
     kwargs["show_log"] = False
 
-try:
-    PaddleOCR(**kwargs)
-except FileNotFoundError as exc:
-    if use_orientation:
-        kwargs.pop("textline_orientation_model_dir", None)
-        kwargs.pop("cls_model_dir", None)
-        kwargs.pop("use_textline_orientation", None)
-        kwargs.pop("use_angle_cls", None)
-        PaddleOCR(**kwargs)
-        cls_dir = ""
-    else:
-        raise
-print(det_dir)
-print(rec_dir)
-print(cls_dir)
+PaddleOCR(**kwargs)
 PY
 
-  if [[ -n "$cls_dir" ]]; then
-    if [[ ! -f "$cls_dir/inference.yml" && ! -f "$cls_dir/inference.pdmodel" && ! -f "$cls_dir/inference.pdiparams" \
-      && ! -f "$cls_dir/model.pdmodel" && ! -f "$cls_dir/model.pdiparams" && ! -f "$cls_dir/model.pdparams" ]]; then
-      log "Orientation model not found; continuing without it."
-      cls_dir=""
-    fi
-  fi
-
   export PADDLEOCR_VL_PYTHON="$paddle_python"
-  export PADDLEOCR_VL_DET_DIR="$det_dir"
-  export PADDLEOCR_VL_REC_DIR="$rec_dir"
-  if [[ -n "$cls_dir" ]]; then
-    export PADDLEOCR_VL_CLS_DIR="$cls_dir"
-  else
-    unset PADDLEOCR_VL_CLS_DIR
-  fi
   log "PaddleOCR models ready."
 }
 
@@ -188,11 +123,6 @@ write_env_file() {
 
   {
     echo "export PADDLEOCR_VL_PYTHON=\"${PADDLEOCR_VL_PYTHON}\""
-    echo "export PADDLEOCR_VL_DET_DIR=\"${PADDLEOCR_VL_DET_DIR}\""
-    echo "export PADDLEOCR_VL_REC_DIR=\"${PADDLEOCR_VL_REC_DIR}\""
-    if [[ -n "${PADDLEOCR_VL_CLS_DIR:-}" ]]; then
-      echo "export PADDLEOCR_VL_CLS_DIR=\"${PADDLEOCR_VL_CLS_DIR}\""
-    fi
     echo "export DANUBE_MODEL_DIR=\"${danube_models}\""
     echo "export DANUBE_N_CTX=\"2048\""
   } > "$env_file"

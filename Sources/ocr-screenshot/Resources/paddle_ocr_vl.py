@@ -69,6 +69,7 @@ def main():
     parser.add_argument("--stdin", action="store_true")
     args = parser.parse_args()
 
+    os.environ.setdefault("DISABLE_MODEL_SOURCE_CHECK", "True")
     try:
         from paddleocr import PaddleOCR
     except Exception as exc:
@@ -86,15 +87,15 @@ def main():
         rec_dir = os.path.join(model_dir, "rec")
         cls_dir = os.path.join(model_dir, "cls")
 
-    if not det_dir or not rec_dir:
-        _error(
-            "Set PADDLEOCR_VL_MODEL_DIR (with det/rec/cls subdirs) or PADDLEOCR_VL_DET_DIR and PADDLEOCR_VL_REC_DIR.",
-            3,
-        )
-
-    use_angle_cls = _has_model_files(cls_dir)
-    if not use_angle_cls:
+    if det_dir and not _has_model_files(det_dir):
+        det_dir = None
+    if rec_dir and not _has_model_files(rec_dir):
+        rec_dir = None
+    if cls_dir and not _has_model_files(cls_dir):
         cls_dir = None
+
+    use_custom_models = bool(det_dir and rec_dir)
+    use_angle_cls = bool(cls_dir)
 
     try:
         import inspect
@@ -105,21 +106,22 @@ def main():
 
     kwargs = {"lang": lang}
 
-    if "text_detection_model_dir" in params:
-        kwargs["text_detection_model_dir"] = det_dir
-    else:
-        kwargs["det_model_dir"] = det_dir
+    if use_custom_models:
+        if "text_detection_model_dir" in params:
+            kwargs["text_detection_model_dir"] = det_dir
+        else:
+            kwargs["det_model_dir"] = det_dir
 
-    if "text_recognition_model_dir" in params:
-        kwargs["text_recognition_model_dir"] = rec_dir
-    else:
-        kwargs["rec_model_dir"] = rec_dir
+        if "text_recognition_model_dir" in params:
+            kwargs["text_recognition_model_dir"] = rec_dir
+        else:
+            kwargs["rec_model_dir"] = rec_dir
 
-    if use_angle_cls:
-        if "textline_orientation_model_dir" in params:
-            kwargs["textline_orientation_model_dir"] = cls_dir
-        elif "cls_model_dir" in params:
-            kwargs["cls_model_dir"] = cls_dir
+        if use_angle_cls:
+            if "textline_orientation_model_dir" in params:
+                kwargs["textline_orientation_model_dir"] = cls_dir
+            elif "cls_model_dir" in params:
+                kwargs["cls_model_dir"] = cls_dir
 
     if "use_textline_orientation" in params:
         kwargs["use_textline_orientation"] = use_angle_cls

@@ -24,7 +24,7 @@ Optional flags:
 - `--no-permissions` skips opening System Settings.
 - `--no-start` skips starting the app.
 
-The installer writes `.scap.env` with model paths and uses it automatically when you run `./scap`.
+The installer writes `.scap.env` with the Python + LLM config and uses it automatically when you run `./scap`.
 
 ## Permissions
 
@@ -42,10 +42,11 @@ The app uses PaddleOCR-VL-0.9B by default via `Sources/ocr-screenshot/Resources/
    - `python3 -m venv .venv`
    - `source .venv/bin/activate`
    - `pip install paddlepaddle paddleocr pillow opencv-python numpy`
-2. Download the PaddleOCR-VL-0.9B model weights and set one of:
+2. If you want to use custom model folders, download the PaddleOCR-VL-0.9B model weights and set one of:
    - `export PADDLEOCR_VL_MODEL_DIR=/path/to/PaddleOCR-VL-0.9B`
    - or `export PADDLEOCR_VL_DET_DIR=/path/to/det` and `export PADDLEOCR_VL_REC_DIR=/path/to/rec`
    - optionally `export PADDLEOCR_VL_CLS_DIR=/path/to/cls`
+   - if not set, PaddleOCR will use its default cache under `~/.paddlex/official_models`
 3. Optional:
    - `export PADDLEOCR_VL_PYTHON=/path/to/python`
    - `export PADDLEOCR_VL_USE_GPU=true`
