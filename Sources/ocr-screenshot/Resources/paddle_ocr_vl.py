@@ -80,15 +80,28 @@ def main():
 
     use_angle_cls = bool(cls_dir)
 
-    ocr = PaddleOCR(
-        det_model_dir=det_dir,
-        rec_model_dir=rec_dir,
-        cls_model_dir=cls_dir if use_angle_cls else None,
-        use_angle_cls=use_angle_cls,
-        use_gpu=use_gpu,
-        lang=lang,
-        show_log=False,
-    )
+    try:
+        import inspect
+        signature = inspect.signature(PaddleOCR)
+        params = signature.parameters
+    except Exception:
+        params = {}
+
+    kwargs = {
+        "det_model_dir": det_dir,
+        "rec_model_dir": rec_dir,
+        "cls_model_dir": cls_dir if use_angle_cls else None,
+        "use_gpu": use_gpu,
+        "lang": lang,
+    }
+    if "use_textline_orientation" in params:
+        kwargs["use_textline_orientation"] = use_angle_cls
+    else:
+        kwargs["use_angle_cls"] = use_angle_cls
+    if "show_log" in params:
+        kwargs["show_log"] = False
+
+    ocr = PaddleOCR(**kwargs)
 
     if args.stdin:
         try:
