@@ -71,30 +71,58 @@ install_paddle() {
   local cls_dir="${paddle_models}/cls"
   mkdir -p "$det_dir" "$rec_dir" "$cls_dir"
 
-  "$paddle_python" - <<PY
+  DISABLE_MODEL_SOURCE_CHECK=True "$paddle_python" - <<PY
 import inspect
 import os
-from paddleocr import PaddleOCR
 
 os.environ.setdefault("DISABLE_MODEL_SOURCE_CHECK", "True")
-kwargs = {
-    "det_model_dir": r"""$det_dir""",
-    "rec_model_dir": r"""$rec_dir""",
-    "cls_model_dir": r"""$cls_dir""",
-    "use_gpu": False,
-    "lang": "en",
-}
+
+from paddleocr import PaddleOCR
+
+det_dir = r"""$det_dir"""
+rec_dir = r"""$rec_dir"""
+cls_dir = r"""$cls_dir"""
+
 sig = inspect.signature(PaddleOCR)
-if "use_textline_orientation" in sig.parameters:
+params = sig.parameters
+
+kwargs = {"lang": "en"}
+
+if "text_detection_model_dir" in params:
+    kwargs["text_detection_model_dir"] = det_dir
+else:
+    kwargs["det_model_dir"] = det_dir
+
+if "text_recognition_model_dir" in params:
+    kwargs["text_recognition_model_dir"] = rec_dir
+else:
+    kwargs["rec_model_dir"] = rec_dir
+
+if cls_dir:
+    if "textline_orientation_model_dir" in params:
+        kwargs["textline_orientation_model_dir"] = cls_dir
+    elif "cls_model_dir" in params:
+        kwargs["cls_model_dir"] = cls_dir
+
+if "use_textline_orientation" in params:
     kwargs["use_textline_orientation"] = True
-elif "use_angle_cls" in sig.parameters:
+elif "use_angle_cls" in params:
     kwargs["use_angle_cls"] = True
-if "show_log" in sig.parameters:
+
+if "use_gpu" in params:
+    kwargs["use_gpu"] = False
+elif "device" in params:
+    kwargs["device"] = "cpu"
+elif "device_type" in params:
+    kwargs["device_type"] = "cpu"
+
+if "show_log" in params:
     kwargs["show_log"] = False
+
 PaddleOCR(**kwargs)
-print(r"""$det_dir""")
-print(r"""$rec_dir""")
-print(r"""$cls_dir""")
+print(det_dir)
+print(rec_dir)
+print(cls_dir)
 PY
 
   export PADDLEOCR_VL_PYTHON="$paddle_python"
