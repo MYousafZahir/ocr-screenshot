@@ -49,6 +49,20 @@ def _flatten_result(result):
     return []
 
 
+def _has_model_files(path: str) -> bool:
+    if not path or not os.path.isdir(path):
+        return False
+    markers = (
+        "inference.yml",
+        "inference.pdmodel",
+        "inference.pdiparams",
+        "model.pdmodel",
+        "model.pdiparams",
+        "model.pdparams",
+    )
+    return any(os.path.exists(os.path.join(path, marker)) for marker in markers)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--image")
@@ -78,7 +92,9 @@ def main():
             3,
         )
 
-    use_angle_cls = bool(cls_dir)
+    use_angle_cls = _has_model_files(cls_dir)
+    if not use_angle_cls:
+        cls_dir = None
 
     try:
         import inspect
