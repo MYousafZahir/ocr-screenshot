@@ -6,6 +6,7 @@ import Foundation
 enum PaddingBlur {
     private static let logScaleFactor: Double = 9.0
     private static let logDenominator = log(1.0 + logScaleFactor)
+    private static let context = CIContext()
 
     static func apply(to image: CGImage, focusRect: CGRect, flipY: Bool) -> CGImage {
         let width = image.width
@@ -39,7 +40,6 @@ enum PaddingBlur {
         blend.maskImage = mask
 
         guard let output = blend.outputImage else { return image }
-        let context = CIContext()
         return context.createCGImage(output, from: input.extent) ?? image
     }
 

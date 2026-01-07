@@ -4,6 +4,14 @@ set -euo pipefail
 repo_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 cd "$repo_dir"
 
+env_file="${repo_dir}/.scap.env"
+if [[ -f "$env_file" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$env_file"
+  set +a
+fi
+
 pid_file="${repo_dir}/.scap.pid"
 log_file="${repo_dir}/scap.log"
 bin_path="${repo_dir}/.build/release/ocr-screenshot"
