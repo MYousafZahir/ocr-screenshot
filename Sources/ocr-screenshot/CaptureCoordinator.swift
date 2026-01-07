@@ -3,14 +3,23 @@ import AppKit
 @MainActor
 final class CaptureCoordinator {
     private let selectionController = SelectionOverlayController()
-    private let ocrProcessor = OCRProcessor()
-    private let visionFallbackProcessor = OCRProcessor(backend: .vision, combineBackends: false)
+    private let primaryProcessor: OCRProcessor
+    private let secondaryProcessor: OCRProcessor
+    private let combineBackendsEnabled: Bool
     private let postProcessor = DanubePostProcessor.shared
     private let formatter = LayoutFormatter()
     private let upscaleFactor = 2
     private let defaultPadding: CGFloat = 8
     private var captureSequence: UInt64 = 0
     private var latestCaptureID: UInt64 = 0
+
+    init() {
+        let backend = OCRBackend.current
+        let secondary = backend == .paddle ? OCRBackend.vision : OCRBackend.paddle
+        self.primaryProcessor = OCRProcessor(backend: backend, combineBackends: false)
+        self.secondaryProcessor = OCRProcessor(backend: secondary, combineBackends: false)
+        self.combineBackendsEnabled = ProcessInfo.processInfo.environment["OCR_COMBINE_BACKENDS"] != "0"
+    }
 
     func startCapture() {
         NSApp.activate(ignoringOtherApps: true)
@@ -56,28 +65,29 @@ final class CaptureCoordinator {
         let focusRectUpscaled = focusRect
             .applying(CGAffineTransform(scaleX: CGFloat(upscaleFactor), y: CGFloat(upscaleFactor)))
             .integral
-
         let formatter = self.formatter
-        let handleResult: @Sendable (Result<[RecognizedTextBox], Error>) -> Void = { result in
+        let scale = upscaleFactor
+        let alternateImageProvider: @Sendable () -> CGImage? = {
+            ImageUpscaler.upscale(image, scale: scale)
+        }
+
+        runAdaptiveOCR(
+            primaryImage: upscaledImage,
+            alternateImageProvider: alternateImageProvider,
+            focusRect: focusRectUpscaled,
+            formatter: formatter
+        ) { result in
             Task { @MainActor in
                 switch result {
-                case .success(let boxes):
-                    AppLog.info("OCR succeeded with \(boxes.count) boxes.")
-                    let text = formatter.format(boxes: boxes)
-                    self.maybeRunQualityFallback(
-                        baseText: text,
-                        image: upscaledImage,
-                        formatter: formatter
-                    ) { finalText in
-                        self.postProcessor.postProcess(text: finalText) { processedText in
-                            Task { @MainActor in
-                                if captureID == self.latestCaptureID {
-                                    ClipboardWriter.write(text: processedText)
-                                } else {
-                                    AppLog.info("Clipboard update skipped for stale capture \(captureID).")
-                                }
-                                completion?(.success(processedText))
+                case .success(let finalText):
+                    self.postProcessor.postProcess(text: finalText) { processedText in
+                        Task { @MainActor in
+                            if captureID == self.latestCaptureID {
+                                ClipboardWriter.write(text: processedText)
+                            } else {
+                                AppLog.info("Clipboard update skipped for stale capture \(captureID).")
                             }
+                            completion?(.success(processedText))
                         }
                     }
                 case .failure(let error):
@@ -86,18 +96,6 @@ final class CaptureCoordinator {
                     completion?(.failure(error))
                 }
             }
-        }
-
-        if multiPassEnabled() {
-            let alternateImage = ImageUpscaler.upscale(image, scale: upscaleFactor)
-            performMultiPassOCR(
-                primary: upscaledImage,
-                secondary: alternateImage,
-                focusRect: focusRectUpscaled,
-                completion: handleResult
-            )
-        } else {
-            ocrProcessor.recognizeText(in: upscaledImage, completion: handleResult)
         }
     }
 
@@ -167,37 +165,131 @@ final class CaptureCoordinator {
         ProcessInfo.processInfo.environment["OCR_MULTI_PASS"] != "0"
     }
 
-    private func maybeRunQualityFallback(
-        baseText: String,
-        image: CGImage,
+    private func runAdaptiveOCR(
+        primaryImage: CGImage,
+        alternateImageProvider: @escaping @Sendable () -> CGImage?,
+        focusRect: CGRect,
         formatter: LayoutFormatter,
-        completion: @escaping @Sendable (String) -> Void
+        completion: @escaping @Sendable (Result<String, Error>) -> Void
     ) {
-        guard qualityFallbackEnabled() else {
-            completion(baseText)
-            return
-        }
-
-        let score = TextQualityScorer.score(baseText)
         let threshold = qualityThreshold()
-        if score >= threshold {
-            completion(baseText)
-            return
-        }
+        let multiPass = multiPassEnabled()
+        let allowFallback = qualityFallbackEnabled() || combineBackendsEnabled
+        let primaryProcessor = self.primaryProcessor
 
-        AppLog.info("OCR quality score \(String(format: "%.2f", score)) below \(threshold). Running Vision fallback.")
-        visionFallbackProcessor.recognizeText(in: image) { result in
+        primaryProcessor.recognizeText(in: primaryImage) { result in
             Task { @MainActor in
                 switch result {
+                case .failure(let error):
+                    completion(.failure(error))
                 case .success(let boxes):
-                    let candidate = formatter.format(boxes: boxes)
-                    let chosen = TextQualityScorer.chooseBetter(primary: baseText, secondary: candidate)
-                    if chosen != baseText {
-                        AppLog.info("OCR quality fallback selected Vision output.")
+                    let filtered = Self.filterBoxes(boxes, focusRect: focusRect)
+                    guard !filtered.isEmpty else {
+                        completion(.failure(OCRProcessorError.noResults))
+                        return
                     }
-                    completion(chosen)
-                case .failure:
-                    completion(baseText)
+                    AppLog.info("OCR succeeded with \(filtered.count) boxes.")
+                    var currentBoxes = filtered
+                    var currentText = formatter.format(boxes: filtered)
+                    guard !currentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        completion(.failure(OCRProcessorError.noResults))
+                        return
+                    }
+
+                    var currentScore = (multiPass || allowFallback)
+                        ? TextQualityScorer.score(currentText)
+                        : 1.0
+                    guard currentScore < threshold, (multiPass || allowFallback) else {
+                        completion(.success(currentText))
+                        return
+                    }
+
+                    let finalize: @MainActor @Sendable () -> Void = {
+                        completion(.success(currentText))
+                    }
+
+                    let runSecondaryBackendIfNeeded: @MainActor @Sendable () -> Void = {
+                        guard currentScore < threshold, allowFallback else {
+                            finalize()
+                            return
+                        }
+                        AppLog.info("OCR adaptive: score \(String(format: "%.2f", currentScore)) below \(threshold). Running secondary backend.")
+                        let secondaryProcessor = self.secondaryProcessor
+                        secondaryProcessor.recognizeText(in: primaryImage) { secondaryResult in
+                            Task { @MainActor in
+                                switch secondaryResult {
+                                case .success(let secondaryBoxes):
+                                    let filteredSecondary = Self.filterBoxes(secondaryBoxes, focusRect: focusRect)
+                                    guard !filteredSecondary.isEmpty else {
+                                        finalize()
+                                        return
+                                    }
+                                    if self.combineBackendsEnabled {
+                                        let mergedBoxes = RecognizedTextMerger.merge(primary: currentBoxes, secondary: filteredSecondary)
+                                        let mergedText = formatter.format(boxes: mergedBoxes)
+                                        let chosen = TextQualityScorer.chooseBetter(
+                                            primary: currentText,
+                                            primaryScore: currentScore,
+                                            secondary: mergedText
+                                        )
+                                        currentText = chosen.text
+                                        currentScore = chosen.score
+                                        if chosen.text == mergedText {
+                                            currentBoxes = mergedBoxes
+                                        }
+                                    } else {
+                                        let candidateText = formatter.format(boxes: filteredSecondary)
+                                        let chosen = TextQualityScorer.chooseBetter(
+                                            primary: currentText,
+                                            primaryScore: currentScore,
+                                            secondary: candidateText
+                                        )
+                                        currentText = chosen.text
+                                        currentScore = chosen.score
+                                    }
+                                case .failure:
+                                    break
+                                }
+                                finalize()
+                            }
+                        }
+                    }
+
+                    guard multiPass else {
+                        runSecondaryBackendIfNeeded()
+                        return
+                    }
+
+                    AppLog.info("OCR adaptive: score \(String(format: "%.2f", currentScore)) below \(threshold). Running multipass.")
+                    if let alternateImage = alternateImageProvider() {
+                        primaryProcessor.recognizeText(in: alternateImage) { secondaryResult in
+                            Task { @MainActor in
+                                switch secondaryResult {
+                                case .success(let secondaryBoxes):
+                                    let filteredSecondary = Self.filterBoxes(secondaryBoxes, focusRect: focusRect)
+                                    if !filteredSecondary.isEmpty {
+                                        let mergedBoxes = RecognizedTextMerger.merge(primary: currentBoxes, secondary: filteredSecondary)
+                                        let mergedText = formatter.format(boxes: mergedBoxes)
+                                        let chosen = TextQualityScorer.chooseBetter(
+                                            primary: currentText,
+                                            primaryScore: currentScore,
+                                            secondary: mergedText
+                                        )
+                                        currentText = chosen.text
+                                        currentScore = chosen.score
+                                        if chosen.text == mergedText {
+                                            currentBoxes = mergedBoxes
+                                        }
+                                    }
+                                case .failure:
+                                    break
+                                }
+                                runSecondaryBackendIfNeeded()
+                            }
+                        }
+                    } else {
+                        runSecondaryBackendIfNeeded()
+                    }
                 }
             }
         }
@@ -213,37 +305,6 @@ final class CaptureCoordinator {
             return value
         }
         return 0.62
-    }
-
-    private func performMultiPassOCR(
-        primary: CGImage,
-        secondary: CGImage,
-        focusRect: CGRect,
-        completion: @escaping @Sendable (Result<[RecognizedTextBox], Error>) -> Void
-    ) {
-        AppLog.info("OCR multipass started.")
-        let ocrProcessor = self.ocrProcessor
-        ocrProcessor.recognizeText(in: primary) { primaryResult in
-            let primaryFiltered = primaryResult.map { Self.filterBoxes($0, focusRect: focusRect) }
-            AppLog.info("OCR multipass primary done.")
-            ocrProcessor.recognizeText(in: secondary) { secondaryResult in
-                let secondaryFiltered = secondaryResult.map { Self.filterBoxes($0, focusRect: focusRect) }
-                AppLog.info("OCR multipass secondary done.")
-
-                switch (primaryFiltered, secondaryFiltered) {
-                case (.success(let primaryBoxes), .success(let secondaryBoxes)):
-                    AppLog.info("OCR multipass boxes: primary \(primaryBoxes.count), secondary \(secondaryBoxes.count).")
-                    let merged = RecognizedTextMerger.merge(primary: primaryBoxes, secondary: secondaryBoxes)
-                    completion(.success(merged))
-                case (.success, .failure):
-                    completion(primaryFiltered)
-                case (.failure, .success):
-                    completion(secondaryFiltered)
-                case (.failure, .failure):
-                    completion(primaryFiltered)
-                }
-            }
-        }
     }
 
     nonisolated private static func filterBoxes(_ boxes: [RecognizedTextBox], focusRect: CGRect) -> [RecognizedTextBox] {

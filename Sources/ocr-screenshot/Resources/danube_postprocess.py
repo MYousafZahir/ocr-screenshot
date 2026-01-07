@@ -193,6 +193,7 @@ def _make_prompt(text: str) -> str:
         "- If table rows are present, keep the number of rows and column separators unchanged.\n"
         "- Add a blank line before and after any Markdown table block.\n"
         "- Add a blank line before multiple-choice answer blocks (A., B., C., etc.).\n"
+        "- Do not add labels like \"Corrected Text:\".\n"
         "- Do not repeat the input or any markers.\n"
         "Return only the corrected text.\n"
         "End your response with <<<ENDOUT>>> on its own line.\n\n"
@@ -213,7 +214,7 @@ def _max_tokens(text: str, n_ctx: int) -> int:
 def _load_llm(model_path: str):
     from llama_cpp import Llama
 
-    n_ctx = int(_env("DANUBE_N_CTX", "4096"))
+    n_ctx = int(_env("DANUBE_N_CTX", "2048"))
     n_threads = int(_env("DANUBE_N_THREADS", str(max(1, (os.cpu_count() or 4) - 1))))
     n_gpu_layers = int(_env("DANUBE_GPU_LAYERS", "0"))
     log(f"Loading model {os.path.basename(model_path)} (ctx={n_ctx}, threads={n_threads}, gpu_layers={n_gpu_layers})...")
@@ -263,6 +264,12 @@ def _strip_prefix_lines(text: str) -> str:
         if re.match(r"(?i)^(the\s+)?corrected\s+text\s+is\s+as\s+follows:?\s*$", line):
             lines.pop(0)
             continue
+        if re.match(r"(?i)^corrected\s+text:?\s*$", line):
+            lines.pop(0)
+            continue
+        if re.match(r"(?i)^corrected:?\s*$", line):
+            lines.pop(0)
+            continue
         break
     return "\n".join(lines).strip()
 
@@ -300,6 +307,8 @@ def _clean_output(output: str) -> str:
 
     cleaned = _strip_prefix_lines(cleaned)
     cleaned = _strip_code_fences(cleaned).strip()
+    if _is_label_only(cleaned):
+        return ""
     return cleaned
 
 
@@ -354,6 +363,13 @@ def _add_option_spacing(text: str) -> str:
             in_option_block = False
 
     return "\n".join(result).rstrip()
+
+
+def _is_label_only(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return True
+    return bool(re.match(r"(?i)^corrected(\s+text)?\s*:?\s*$", stripped))
 
 
 def main() -> int:

@@ -23,12 +23,14 @@ final class PaddleOCRRunner: @unchecked Sendable {
         let scriptURL = scriptURL
         let pythonPath = pythonPath
         DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                let imageData = try Self.encodePNG(image)
-                let result = try Self.runOCR(imageData: imageData, scriptURL: scriptURL, pythonPath: pythonPath)
-                completion(.success(result))
-            } catch {
-                completion(.failure(error))
+            autoreleasepool {
+                do {
+                    let imageData = try Self.encodePNG(image)
+                    let result = try Self.runOCR(imageData: imageData, scriptURL: scriptURL, pythonPath: pythonPath)
+                    completion(.success(result))
+                } catch {
+                    completion(.failure(error))
+                }
             }
         }
     }
